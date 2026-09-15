@@ -4,7 +4,7 @@
 
 This repository contains a publishable python script to batch upload models into echo3D. It feeds in arguments from parsing and csv file, and automatically make a POST request to Echo3D upload API.
 
-The default endpoint is Disney on-prem: `https://disney-api.echo3d.com/upload`
+The default endpoint is pointed at: `https://disney-api.echo3d.com/upload`
 
 ## Requirements
 
