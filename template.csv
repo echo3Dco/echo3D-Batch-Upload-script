@@ -1,7 +1,8 @@
-target_type,asset_file,url_image,url_video,file_image,text_geolocation,longitude,latitude,file_cvs
-0,/path/to/your/file/example1.glb,https://www.exampleurl.com/abc123,,,,,,
-0,/path/to/your/file/example1.glb,,,/path/to/your/image/image.jpg,,,,
-1,/path/to/your/file/example2.obj,,,,Your geolocation address,,,
-1,/path/to/your/file/example2.obj,,,,,-74.00597,40.71427,
-2,/path/to/your/file/example3.gltf,,,,,,,
-2,,,https://www.exampleurl.com/abc123,,,,,
+target_type,asset_file,hero_file,url_image,url_video,file_image,text_geolocation,longitude,latitude,file_cvs
+0,/path/to/your/file/example1.glb,,https://www.exampleurl.com/abc123,,,,,,
+0,/path/to/your/file/example1.glb,,,,/path/to/your/image/image.jpg,,,,
+1,/path/to/your/file/example2.obj,,,,,Your geolocation address,,,
+1,/path/to/your/file/example2.obj,,,,,,-74.00597,40.71427,
+2,/path/to/your/file/example3.gltf,,,,,,,,
+2,/path/to/your/maya-package.zip,Hero.ma,,,,,,,
+2,,,,https://www.exampleurl.com/abc123,,,,,
