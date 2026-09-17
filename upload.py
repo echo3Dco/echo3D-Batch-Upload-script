@@ -18,7 +18,6 @@ VALID_ARGUMENTS = {
     'data',
     'file',
     'file_csv',
-    'file_cvs',
     'file_image',
     'filename',
     'hero_file',
@@ -30,7 +29,7 @@ VALID_ARGUMENTS = {
     'url_image',
     'url_video',
 }
-FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_cvs', 'file_image'}
+FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
 
 # Same default settings object the console sends when no extra conversions are chosen.
@@ -218,8 +217,6 @@ def build_body_form_data(args):
 
                     if argument_name in ('asset_file', 'file'):
                         files['file'] = opened
-                    elif argument_name in ('file_csv', 'file_cvs'):
-                        files['file_csv'] = opened
                     else:
                         files[argument_name] = opened
                 elif argument_name == 'hero_file':
