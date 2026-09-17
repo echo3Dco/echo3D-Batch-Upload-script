@@ -74,9 +74,9 @@ If errors are detected above, the script will print the corresponding error mess
 
 Here is a list of valid and possibly required arguments: 
 
-`['target_type', 'asset_file', 'hero_file', 'url_image', 'url_video', 'file_image', 'text_geolocation', 'longitude', 'latitude', 'file_cvs']`
+`['target_type', 'asset_file', 'hero_file', 'url_image', 'url_video', 'file_image', 'text_geolocation', 'longitude', 'latitude', 'file_csv']`
 
-Also accepted: `file` (alias of `asset_file`), `url` (alias of `url_video`), `file_csv` (alias of `file_cvs`), `filename`, `data`, and `allow_duplicate`.
+Also accepted: `file` (alias of `asset_file`), `url` (alias of `url_video`), `filename`, `data`, and `allow_duplicate`.
 
 By default, `template.csv` contains the arguments above as CSV headers. 
 
@@ -100,7 +100,7 @@ Here is an upload API examples using this script:
 
     where `template.csv` is as follows:
 
-   |target_type|asset_file                          |url_image|url_video|file_image|text_geolocation|longitude|latitude|file_cvs|
+   |target_type|asset_file                          |url_image|url_video|file_image|text_geolocation|longitude|latitude|file_csv|
    |-----------|------------------------------------|---------|---------|----------|----------------|---------|--------|--------|
    |2          |/path/to/your/file/example1.glb     |         |         |          |                |         |        |        |
    |2          |/path/to/your/file/example2.obj     |         |         |          |                |         |        |        |

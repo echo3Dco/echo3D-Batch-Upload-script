@@ -1,4 +1,4 @@
-target_type,asset_file,hero_file,url_image,url_video,file_image,text_geolocation,longitude,latitude,file_cvs
+target_type,asset_file,hero_file,url_image,url_video,file_image,text_geolocation,longitude,latitude,file_csv
 0,/path/to/your/file/example1.glb,,https://www.exampleurl.com/abc123,,,,,,
 0,/path/to/your/file/example1.glb,,,,/path/to/your/image/image.jpg,,,,
 1,/path/to/your/file/example2.obj,,,,,Your geolocation address,,,
