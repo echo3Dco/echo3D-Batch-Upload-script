@@ -4,6 +4,7 @@ Build a publishable script to batch upload models into echo3D
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
 import requests
 import csv
@@ -31,6 +32,11 @@ VALID_ARGUMENTS = {
 }
 FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
+PRESIGNED_URL = 'https://43o8cof33l.execute-api.us-east-2.amazonaws.com/default/getPresignedUrlMultipart'
+
+MiB = 1024 * 1024
+MULTIPART_THRESHOLD_BYTES = 100 * MiB
+S3_SINGLE_PUT_MAX_BYTES = 5 * 1024 * MiB
 
 # Same default settings object the console sends when no extra conversions are chosen.
 DEFAULT_UPLOAD_SETTINGS = {
@@ -151,7 +157,7 @@ def main():
         print("Dry run: no files were uploaded.")
         return 0
 
-    post(file_list, args.api_url)
+    post(file_list, args)
     print("All upload queries have been processed by Echo3D API. An out.json file storing API returned status code and "
           "results is generated")
 
@@ -405,23 +411,137 @@ def calculate_hologram_type(file_extension):
         return -1
 
 
+def presigned_get(params):
+    response = requests.get(PRESIGNED_URL, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+def upload_multipart(file_path, file_size, api_key, details):
+    storage_id = details['Key']
+    upload_id = details['uploadId']
+    part_size = min(max((file_size + 999) // 1000, 16 * MiB), 100 * MiB)
+    part_size = max(part_size, (file_size + 9999) // 10000)
+    parts = []
+    start = 0
+    part_number = 1
+    while start < file_size:
+        end = min(start + part_size, file_size)
+        parts.append((part_number, start, end))
+        start = end
+        part_number += 1
+
+    def sign_parts(part_numbers):
+        body = presigned_get({
+            'action': 'signParts',
+            'key': api_key,
+            'Key': storage_id,
+            'uploadId': upload_id,
+            'partNumbers': ','.join(str(n) for n in part_numbers),
+        })
+        return body.get('urls') or {}
+
+    urls = {}
+    numbers = [part[0] for part in parts]
+    for i in range(0, len(numbers), 25):
+        urls.update(sign_parts(numbers[i:i + 25]))
+
+    def upload_part(part):
+        part_number, start, end = part
+        part_url = urls.get(str(part_number))
+        for attempt in range(4):
+            if attempt:
+                part_url = sign_parts([part_number]).get(str(part_number))
+            if not part_url:
+                raise requests.RequestException('No presigned URL returned for part %s' % part_number)
+            try:
+                with open(file_path, 'rb') as handle:
+                    handle.seek(start)
+                    response = requests.put(part_url, data=handle.read(end - start))
+                    response.raise_for_status()
+                return
+            except requests.RequestException:
+                if attempt == 3:
+                    raise
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(4, len(parts))) as executor:
+            list(executor.map(upload_part, parts))
+        presigned_get({
+            'action': 'complete',
+            'key': api_key,
+            'Key': storage_id,
+            'uploadId': upload_id,
+            'expectedParts': str(len(parts)),
+        })
+    except Exception:
+        try:
+            requests.get(PRESIGNED_URL, params={
+                'action': 'abort',
+                'key': api_key,
+                'Key': storage_id,
+                'uploadId': upload_id,
+            })
+        except requests.RequestException:
+            pass
+        raise
+    return storage_id
+
+
+def upload_to_storage(file_path, api_key):
+    file_path = str(file_path)
+    file_size = os.path.getsize(file_path)
+    ext = os.path.splitext(file_path)[1].replace('.', '').lower()
+    if file_size >= MULTIPART_THRESHOLD_BYTES:
+        try:
+            details = presigned_get({'action': 'create', 'key': api_key, 'ext': ext})
+        except (requests.RequestException, ValueError):
+            details = {}
+        if details.get('Key') and details.get('uploadId'):
+            return upload_multipart(file_path, file_size, api_key, details)
+    if file_size >= S3_SINGLE_PUT_MAX_BYTES:
+        raise requests.RequestException(
+            'File is larger than 5GB and the presigned URL endpoint does not support multipart uploads'
+        )
+    body = presigned_get({'key': api_key, 'ext': ext, 'new': 'true'})
+    with open(file_path, 'rb') as handle:
+        response = requests.put(body['uploadURL'], data=handle)
+        response.raise_for_status()
+    return body['Key']
+
+
 # Invoke Echo3D API for POST request
-def post(file_list, upload_url):
+def post(file_list, args):
     results = []
     for form_data in file_list:
         filename = form_data['data'].get('filename') or form_data['data'].get('url') or ''
         print("Uploading %s ..." % filename)
+        asset_file = form_data['files'].pop('file', None)
         try:
-            if form_data['files']:
-                r = requests.post(upload_url, data=form_data['data'], files=form_data['files'])
+            if asset_file is not None:
+                file_path = asset_file.name
+                storage_id = upload_to_storage(file_path, args.api_key)
+                _, ext = os.path.splitext(file_path)
+                ext = ext.replace('.', '').lower()
+                form_data['data']['s3StorageId'] = storage_id
+                form_data['data']['filename'] = filename or os.path.basename(file_path)
+                form_data['data']['file_size'] = str(os.path.getsize(file_path))
+                form_data['data']['hologram_type'] = int(calculate_hologram_type(ext))
+                asset_file.close()
+                asset_file = None
+            extra_files = form_data['files']
+            if extra_files:
+                r = requests.post(args.api_url, data=form_data['data'], files=extra_files)
             else:
-                r = requests.post(upload_url, data=form_data['data'])
+                r = requests.post(args.api_url, data=form_data['data'])
             result = {'filename': filename, 'status_code': r.status_code, 'response_text': r.text}
             print(r.status_code, r.text[:500])
         except requests.RequestException as error:
             result = {'filename': filename, 'status_code': None, 'response_text': str(error)}
             print(error)
         finally:
+            if asset_file is not None:
+                asset_file.close()
             for handle in form_data['files'].values():
                 handle.close()
         results.append(result)
