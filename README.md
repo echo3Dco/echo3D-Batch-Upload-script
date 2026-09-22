@@ -42,7 +42,7 @@ The default endpoint is pointed at: `https://disney-api.echo3d.com/upload`
 
    where
    
-   * `[BODY_ARGS]` is the path to your csv file that contains all other arguments needed for making a POST request to echo3D API. Check out the `template.csv`.
+   * `[BODY_ARGS]` is the path to your csv file that contains all other arguments needed for making a POST request to echo3D API. Check out the `template.csv`. Omit this when using `--path`.
    * `[API_KEY]` is your Echo3D API key
    * `[EMAIL]` is the registered email of your echo3D account
    * `[USER_KEY]` is your user authentication key
@@ -50,7 +50,8 @@ The default endpoint is pointed at: `https://disney-api.echo3d.com/upload`
 
    Optional flags:
    
-   * `--dry-run` — validate the CSV and print the request preview without uploading
+   * `--path` — path to a file, or a folder of files, to upload with default settings (no CSV)
+   * `--dry-run` — validate inputs and print the request preview without uploading
    * `--allow-duplicate` — allow duplicate uploads for every row
    * `--wait-for-processing` — wait up to 5 minutes per file for processing (default is `noProcessingWait=true`)
    * `--api-url` — override the endpoint (defaults to `https://disney-api.echo3d.com/upload`)
@@ -134,3 +135,10 @@ Here is an upload API examples using this script:
     `hero_file` is the Maya filename inside the zip, not the path the worker logs after unzip. Omit the column (or leave it blank) if the zip has a single root `.ma` / `.mb`.
 
     Use `--dry-run` first to confirm `uploadSettingsJsonString` includes `heroFile` without uploading.
+
+3. Uploading every file in a folder (including zipped Maya packages) with default console settings:
+
+    `python upload.py --path /path/to/your/maya_zips --key YOUR_API_KEY --email you@studio.com --user-key YOUR_USER_KEY --allow-duplicate`
+
+    `--path` can also point at a single file. No CSV is required. Each file is uploaded with the same default `uploadSettingsJsonString` the console sends. Leave `hero_file` to the worker: zipped Maya packages are treated as models, and the worker picks the root `.ma` / `.mb`. Use a CSV when you need to set `hero_file` per zip.
+

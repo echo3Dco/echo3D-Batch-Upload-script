@@ -88,8 +88,10 @@ def main():
     )
     parser.add_argument(
         'body_args',
+        nargs='?',
         type=str,
-        help='Filepath to your csv file containing all other arguments for POST body. Check out template.csv',
+        help='Filepath to your csv file containing all other arguments for POST body. Check out template.csv. '
+             'Omit this when using --path',
     )
     parser.add_argument('--key', dest='api_key', required=True, help='Your Echo3D API key')
     parser.add_argument('--email', required=True, help='Your user email')
@@ -112,15 +114,27 @@ def main():
         help='Wait up to 5 minutes per file for processing. Default is noProcessingWait=true',
     )
     parser.add_argument(
+        '--path',
+        nargs='+',
+        help='Path to a file to upload, or a folder whose files are uploaded with default settings',
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Validate the CSV and print the request preview without uploading',
+        help='Validate inputs and print the request preview without uploading',
     )
 
     args = parser.parse_args()
-    file_list = build_body_form_data(args)
+    if args.path:
+        args.path = ' '.join(args.path)
+    if not args.body_args and not args.path:
+        parser.error('Provide a CSV file or --path')
+    if args.body_args and args.path:
+        parser.error('Use a CSV file or --path, not both')
+
+    file_list = build_body_form_data_from_path(args) if args.path else build_body_form_data(args)
     if not file_list:
-        print("[WARNING] Your csv file is empty! No files are uploaded!")
+        print("[WARNING] No files are uploaded!")
         return 0
 
     print("===Body Form-Data Preview===")
@@ -142,6 +156,59 @@ def main():
           "results is generated")
 
     return 0
+
+
+# Build form-data for a local file using the same defaults as the console
+def append_file_upload(file_list, args, files, data, hero_file=None):
+    if args.allow_duplicate:
+        data['allowDuplicate'] = 'true'
+    if not args.wait_for_processing:
+        data['noProcessingWait'] = 'true'
+    if 'filename' not in data and 'file' in files:
+        data['filename'] = Path(files['file'].name).name
+
+    settings = dict(DEFAULT_UPLOAD_SETTINGS)
+    if hero_file:
+        settings['heroFile'] = hero_file
+    data['uploadSettingsJsonString'] = json.dumps(settings)
+
+    if process_target_type(data, files) != 0 or process_hologram_type(data, files) != 0:
+        return False
+    file_list.append({'data': data, 'files': files})
+    return True
+
+
+def build_body_form_data_from_path(args):
+    source = Path(args.path)
+    if not os.path.exists(source):
+        print("[FILE PATH ERROR] Invalid filepath for --path which is '%s': No such file or directory" % args.path)
+        exit(-7)
+
+    if source.is_file():
+        paths = [source]
+    else:
+        paths = []
+        for name in sorted(os.listdir(source)):
+            path = source / name
+            if not path.is_file():
+                continue
+            _, file_extension = os.path.splitext(name)
+            file_extension = file_extension.replace('.', '').lower()
+            if calculate_hologram_type(file_extension) == -1:
+                continue
+            paths.append(path)
+
+    file_list = []
+    for path in paths:
+        data = {'key': args.api_key, 'email': args.email, 'userKey': args.user_key}
+        if args.sec_key:
+            data['secKey'] = args.sec_key
+        files = {'file': open(path, 'rb')}
+        if not append_file_upload(file_list, args, files, data):
+            print("Above error was detected for file '%s'. You need to resolve it before continuing "
+                  "the batch upload process" % path)
+            exit(-8)
+    return file_list
 
 
 # Build form-data for POST query
@@ -228,24 +295,11 @@ def build_body_form_data(args):
                 else:
                     data[argument_name] = value
 
-            if args.allow_duplicate:
-                data['allowDuplicate'] = 'true'
-            if not args.wait_for_processing:
-                data['noProcessingWait'] = 'true'
-            if 'filename' not in data and 'file' in files:
-                data['filename'] = Path(files['file'].name).name
-
-            settings = dict(DEFAULT_UPLOAD_SETTINGS)
-            if hero_file:
-                settings['heroFile'] = hero_file
-            data['uploadSettingsJsonString'] = json.dumps(settings)
-
-            if process_target_type(data, files) != 0 or process_hologram_type(data, files) != 0:
+            if not append_file_upload(file_list, args, files, data, hero_file):
                 print("Above error was detected in line %d of your csv file. You need to resolve it before continuing "
                       "the batch upload process" % csv_line)
                 exit(-8)
 
-            file_list.append({'data': data, 'files': files})
             csv_line += 1
 
     return file_list
