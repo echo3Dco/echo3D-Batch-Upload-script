@@ -13,6 +13,8 @@ import os
 from pprint import pprint
 import json
 
+http = requests.Session()
+
 VALID_ARGUMENTS = {
     'allow_duplicate',
     'asset_file',
@@ -412,7 +414,7 @@ def calculate_hologram_type(file_extension):
 
 
 def presigned_get(params):
-    response = requests.get(PRESIGNED_URL, params=params)
+    response = http.get(PRESIGNED_URL, params=params)
     response.raise_for_status()
     return response.json()
 
@@ -441,8 +443,8 @@ def upload_multipart(file_path, file_size, api_key, details):
         })
         return body.get('urls') or {}
 
-    urls = {}
     numbers = [part[0] for part in parts]
+    urls = {}
     for i in range(0, len(numbers), 25):
         urls.update(sign_parts(numbers[i:i + 25]))
 
@@ -457,7 +459,7 @@ def upload_multipart(file_path, file_size, api_key, details):
             try:
                 with open(file_path, 'rb') as handle:
                     handle.seek(start)
-                    response = requests.put(part_url, data=handle.read(end - start))
+                    response = http.put(part_url, data=handle.read(end - start))
                     response.raise_for_status()
                 return
             except requests.RequestException:
@@ -476,7 +478,7 @@ def upload_multipart(file_path, file_size, api_key, details):
         })
     except Exception:
         try:
-            requests.get(PRESIGNED_URL, params={
+            http.get(PRESIGNED_URL, params={
                 'action': 'abort',
                 'key': api_key,
                 'Key': storage_id,
@@ -493,10 +495,7 @@ def upload_to_storage(file_path, api_key):
     file_size = os.path.getsize(file_path)
     ext = os.path.splitext(file_path)[1].replace('.', '').lower()
     if file_size >= MULTIPART_THRESHOLD_BYTES:
-        try:
-            details = presigned_get({'action': 'create', 'key': api_key, 'ext': ext})
-        except (requests.RequestException, ValueError):
-            details = {}
+        details = presigned_get({'action': 'create', 'key': api_key, 'ext': ext})
         if details.get('Key') and details.get('uploadId'):
             return upload_multipart(file_path, file_size, api_key, details)
     if file_size >= S3_SINGLE_PUT_MAX_BYTES:
@@ -505,7 +504,7 @@ def upload_to_storage(file_path, api_key):
         )
     body = presigned_get({'key': api_key, 'ext': ext, 'new': 'true'})
     with open(file_path, 'rb') as handle:
-        response = requests.put(body['uploadURL'], data=handle)
+        response = http.put(body['uploadURL'], data=handle)
         response.raise_for_status()
     return body['Key']
 
@@ -529,11 +528,9 @@ def post(file_list, args):
                 form_data['data']['hologram_type'] = int(calculate_hologram_type(ext))
                 asset_file.close()
                 asset_file = None
-            extra_files = form_data['files']
-            if extra_files:
-                r = requests.post(args.api_url, data=form_data['data'], files=extra_files)
-            else:
-                r = requests.post(args.api_url, data=form_data['data'])
+            files = {key: (None, str(value)) for key, value in form_data['data'].items()}
+            files.update(form_data['files'])
+            r = http.post(args.api_url, files=files)
             result = {'filename': filename, 'status_code': r.status_code, 'response_text': r.text}
             print(r.status_code, r.text[:500])
         except requests.RequestException as error:
