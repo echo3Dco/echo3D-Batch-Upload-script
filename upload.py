@@ -4,7 +4,7 @@ Build a publishable script to batch upload models into echo3D
 """
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import IntEnum
 import requests
 import csv
@@ -12,6 +12,7 @@ from pathlib import Path
 import os
 from pprint import pprint
 import json
+import time
 
 http = requests.Session()
 
@@ -34,7 +35,7 @@ VALID_ARGUMENTS = {
 }
 FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
-PRESIGNED_URL = 'https://43o8cof33l.execute-api.us-east-2.amazonaws.com/default/getPresignedUrlMultipart'
+PRESIGNED_URL = 'https://h73p4taa29.execute-api.us-east-1.amazonaws.com/default/disney-getPresignedPutUrlMultipart'
 
 MiB = 1024 * 1024
 MULTIPART_THRESHOLD_BYTES = 100 * MiB
@@ -413,13 +414,38 @@ def calculate_hologram_type(file_extension):
         return -1
 
 
+def print_progress(name, loaded, total, state):
+    percent = 100 if total <= 0 else min(100, int(loaded * 100 / total))
+    if state.get('percent') == percent and loaded < total:
+        return
+    state['percent'] = percent
+    bar = '#' * (percent // 5) + '-' * (20 - percent // 5)
+    print('\rUploading %s [%s] %d%%' % (name, bar, percent), end='\n' if percent == 100 else '', flush=True)
+
+
+class _ProgressFile:
+    def __init__(self, handle, name, total, state):
+        self._handle = handle
+        self._name = name
+        self._total = total
+        self._state = state
+        self._loaded = 0
+        self.len = total
+
+    def read(self, amt=-1):
+        data = self._handle.read(amt)
+        self._loaded += len(data)
+        print_progress(self._name, self._loaded, self._total, self._state)
+        return data
+
+
 def presigned_get(params):
     response = http.get(PRESIGNED_URL, params=params)
     response.raise_for_status()
     return response.json()
 
 
-def upload_multipart(file_path, file_size, api_key, details):
+def upload_multipart(file_path, file_size, api_key, details, name, state):
     storage_id = details['Key']
     upload_id = details['uploadId']
     part_size = min(max((file_size + 999) // 1000, 16 * MiB), 100 * MiB)
@@ -432,6 +458,8 @@ def upload_multipart(file_path, file_size, api_key, details):
         parts.append((part_number, start, end))
         start = end
         part_number += 1
+    print("Uploading %s via multipart (%d parts, %s)" % (name, len(parts), storage_id))
+    print_progress(name, 0, file_size, state)
 
     def sign_parts(part_numbers):
         body = presigned_get({
@@ -443,8 +471,8 @@ def upload_multipart(file_path, file_size, api_key, details):
         })
         return body.get('urls') or {}
 
-    numbers = [part[0] for part in parts]
     urls = {}
+    numbers = [part[0] for part in parts]
     for i in range(0, len(numbers), 25):
         urls.update(sign_parts(numbers[i:i + 25]))
 
@@ -465,47 +493,75 @@ def upload_multipart(file_path, file_size, api_key, details):
             except requests.RequestException:
                 if attempt == 3:
                     raise
+                time.sleep(5 * (attempt + 1))
 
+    completed = False
     try:
+        loaded = 0
         with ThreadPoolExecutor(max_workers=min(4, len(parts))) as executor:
-            list(executor.map(upload_part, parts))
-        presigned_get({
-            'action': 'complete',
-            'key': api_key,
-            'Key': storage_id,
-            'uploadId': upload_id,
-            'expectedParts': str(len(parts)),
-        })
+            futures = {executor.submit(upload_part, part): part for part in parts}
+            for future in as_completed(futures):
+                future.result()
+                part = futures[future]
+                loaded += part[2] - part[1]
+                print_progress(name, loaded, file_size, state)
+        body = {}
+        for attempt in range(4):
+            if attempt:
+                time.sleep(2 * attempt)
+            try:
+                body = presigned_get({
+                    'action': 'complete',
+                    'key': api_key,
+                    'Key': storage_id,
+                    'uploadId': upload_id,
+                    'expectedParts': str(len(parts)),
+                })
+            except requests.HTTPError as error:
+                if error.response is not None and error.response.status_code == 409:
+                    continue
+                raise
+            if body.get('Key'):
+                completed = True
+                break
+        if not completed:
+            raise requests.RequestException(body.get('error') or 'Multipart complete failed')
     except Exception:
-        try:
-            http.get(PRESIGNED_URL, params={
-                'action': 'abort',
-                'key': api_key,
-                'Key': storage_id,
-                'uploadId': upload_id,
-            })
-        except requests.RequestException:
-            pass
+        if not completed:
+            try:
+                http.get(PRESIGNED_URL, params={
+                    'action': 'abort',
+                    'key': api_key,
+                    'Key': storage_id,
+                    'uploadId': upload_id,
+                })
+            except requests.RequestException:
+                pass
         raise
     return storage_id
 
 
-def upload_to_storage(file_path, api_key):
+def upload_to_storage(file_path, api_key, name):
     file_path = str(file_path)
+    name = name or os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
     ext = os.path.splitext(file_path)[1].replace('.', '').lower()
+    state = {}
     if file_size >= MULTIPART_THRESHOLD_BYTES:
         details = presigned_get({'action': 'create', 'key': api_key, 'ext': ext})
         if details.get('Key') and details.get('uploadId'):
-            return upload_multipart(file_path, file_size, api_key, details)
+            return upload_multipart(file_path, file_size, api_key, details, name, state)
+        print("[WARNING] Multipart create failed, falling back to a single PUT")
     if file_size >= S3_SINGLE_PUT_MAX_BYTES:
         raise requests.RequestException(
             'File is larger than 5GB and the presigned URL endpoint does not support multipart uploads'
         )
     body = presigned_get({'key': api_key, 'ext': ext, 'new': 'true'})
+    print_progress(name, 0, file_size, state)
     with open(file_path, 'rb') as handle:
-        response = http.put(body['uploadURL'], data=handle)
+        response = http.put(body['uploadURL'], data=_ProgressFile(handle, name, file_size, state))
         response.raise_for_status()
+    print_progress(name, file_size, file_size, state)
     return body['Key']
 
 
@@ -514,12 +570,11 @@ def post(file_list, args):
     results = []
     for form_data in file_list:
         filename = form_data['data'].get('filename') or form_data['data'].get('url') or ''
-        print("Uploading %s ..." % filename)
         asset_file = form_data['files'].pop('file', None)
         try:
             if asset_file is not None:
                 file_path = asset_file.name
-                storage_id = upload_to_storage(file_path, args.api_key)
+                storage_id = upload_to_storage(file_path, args.api_key, filename or os.path.basename(file_path))
                 _, ext = os.path.splitext(file_path)
                 ext = ext.replace('.', '').lower()
                 form_data['data']['s3StorageId'] = storage_id
@@ -528,12 +583,15 @@ def post(file_list, args):
                 form_data['data']['hologram_type'] = int(calculate_hologram_type(ext))
                 asset_file.close()
                 asset_file = None
+            else:
+                print("Uploading %s ..." % filename)
             files = {key: (None, str(value)) for key, value in form_data['data'].items()}
             files.update(form_data['files'])
             r = http.post(args.api_url, files=files)
             result = {'filename': filename, 'status_code': r.status_code, 'response_text': r.text}
             print(r.status_code, r.text[:500])
         except requests.RequestException as error:
+            print()
             result = {'filename': filename, 'status_code': None, 'response_text': str(error)}
             print(error)
         finally:
