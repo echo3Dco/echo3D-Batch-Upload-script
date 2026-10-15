@@ -34,7 +34,7 @@ VALID_ARGUMENTS = {
     'url_video',
 }
 FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
-SCRIPT_VERSION = '1.0.1.0'
+SCRIPT_VERSION = '1.0.2.0'
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
 PRESIGNED_URL = 'https://h73p4taa29.execute-api.us-east-1.amazonaws.com/default/disney-getPresignedPutUrlMultipart'
 
