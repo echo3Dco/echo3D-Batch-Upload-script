@@ -34,6 +34,7 @@ VALID_ARGUMENTS = {
     'url_video',
 }
 FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
+SCRIPT_VERSION = '1.0.1.0'
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
 PRESIGNED_URL = 'https://h73p4taa29.execute-api.us-east-1.amazonaws.com/default/disney-getPresignedPutUrlMultipart'
 
@@ -92,6 +93,7 @@ class HologramType(IntEnum):
 
 
 def main():
+    print('scriptVersion = "%s"' % SCRIPT_VERSION)
     parser = argparse.ArgumentParser(
         description='Batch upload assets to echo3D via POST /upload.',
     )
@@ -471,20 +473,15 @@ def upload_multipart(file_path, file_size, api_key, details, name, state):
         })
         return body.get('urls') or {}
 
-    urls = {}
-    numbers = [part[0] for part in parts]
-    for i in range(0, len(numbers), 25):
-        urls.update(sign_parts(numbers[i:i + 25]))
-
     def upload_part(part):
         part_number, start, end = part
-        part_url = urls.get(str(part_number))
         for attempt in range(4):
-            if attempt:
-                part_url = sign_parts([part_number]).get(str(part_number))
-            if not part_url:
-                raise requests.RequestException('No presigned URL returned for part %s' % part_number)
             try:
+                # Sign right before each attempt. Long uploads can run for hours, so URLs signed
+                # up front would expire before the later parts reach them.
+                part_url = sign_parts([part_number]).get(str(part_number))
+                if not part_url:
+                    raise requests.RequestException('No presigned URL returned for part %s' % part_number)
                 with open(file_path, 'rb') as handle:
                     handle.seek(start)
                     response = http.put(part_url, data=handle.read(end - start))
