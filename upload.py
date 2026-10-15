@@ -34,7 +34,11 @@ VALID_ARGUMENTS = {
     'url_video',
 }
 FILE_PATH_ARGS_NAME = {'asset_file', 'file', 'file_csv', 'file_image'}
+<<<<<<< HEAD
+SCRIPT_VERSION = '1.0.2.0'
+=======
 SCRIPT_VERSION = '1.0.1.0'
+>>>>>>> 42f38ac57d0590fe220071916ceb50c22de1ac33
 UPLOAD_URL = 'https://disney-api.echo3d.com/upload'
 PRESIGNED_URL = 'https://h73p4taa29.execute-api.us-east-1.amazonaws.com/default/disney-getPresignedPutUrlMultipart'
 
@@ -441,10 +445,57 @@ class _ProgressFile:
         return data
 
 
-def presigned_get(params):
-    response = http.get(PRESIGNED_URL, params=params)
-    response.raise_for_status()
+def presigned_get(params, timeout=None):
+    response = http.get(PRESIGNED_URL, params=params, timeout=timeout)
+    if response.status_code >= 400:
+        # Include the response body: it tells the endpoint's own errors apart from API Gateway's
+        # (e.g. "Failed to process presigned URL request." vs "Internal Server Error").
+        raise requests.HTTPError(
+            '%d from presigned URL endpoint (action=%s): %s'
+            % (response.status_code, params.get('action') or 'single', response.text[:500]),
+            response=response,
+        )
     return response.json()
+
+
+# Waits between attempts to complete a multipart upload. Each attempt can itself take ~30s before API
+# Gateway gives up, so this covers well over the endpoint's 5 minute run time for a large completion.
+COMPLETE_RETRY_DELAYS = (5, 10, 20, 30, 30, 30, 30, 30, 30, 30)
+COMPLETE_RETRY_STATUSES = {409, 429, 500, 502, 503, 504}
+
+
+def complete_multipart(api_key, storage_id, upload_id, part_count):
+    params = {
+        'action': 'complete',
+        'key': api_key,
+        'Key': storage_id,
+        'uploadId': upload_id,
+        'expectedParts': str(part_count),
+    }
+    attempts = len(COMPLETE_RETRY_DELAYS) + 1
+    last_error = None
+    for attempt, delay in enumerate((0,) + COMPLETE_RETRY_DELAYS):
+        if delay:
+            print("Completing upload failed (%s). Retrying in %ds (attempt %d of %d)"
+                  % (last_error, delay, attempt + 1, attempts))
+            time.sleep(delay)
+        try:
+            body = presigned_get(params, timeout=(10, 330))
+            if isinstance(body, dict) and body.get('Key'):
+                return
+            last_error = 'Unexpected response: %s' % str(body)[:200]
+        except requests.HTTPError as error:
+            status = error.response.status_code if error.response is not None else None
+            if status not in COMPLETE_RETRY_STATUSES:
+                raise requests.RequestException(
+                    'Multipart completion failed: %s (Key=%s, uploadId=%s)' % (error, storage_id, upload_id))
+            last_error = error
+        except (requests.ConnectionError, requests.Timeout) as error:
+            last_error = error
+    raise requests.RequestException(
+        'Multipart completion failed after %d attempts: %s. All parts are still stored and the upload was NOT '
+        'aborted, so it can be completed later without re-uploading (Key=%s, uploadId=%s)'
+        % (attempts, last_error, storage_id, upload_id))
 
 
 def upload_multipart(file_path, file_size, api_key, details, name, state):
@@ -473,20 +524,15 @@ def upload_multipart(file_path, file_size, api_key, details, name, state):
         })
         return body.get('urls') or {}
 
-    urls = {}
-    numbers = [part[0] for part in parts]
-    for i in range(0, len(numbers), 25):
-        urls.update(sign_parts(numbers[i:i + 25]))
-
     def upload_part(part):
         part_number, start, end = part
-        part_url = urls.get(str(part_number))
         for attempt in range(4):
-            if attempt:
-                part_url = sign_parts([part_number]).get(str(part_number))
-            if not part_url:
-                raise requests.RequestException('No presigned URL returned for part %s' % part_number)
             try:
+                # Sign right before each attempt. Long uploads can run for hours, so URLs signed
+                # up front would expire before the later parts reach them.
+                part_url = sign_parts([part_number]).get(str(part_number))
+                if not part_url:
+                    raise requests.RequestException('No presigned URL returned for part %s' % part_number)
                 with open(file_path, 'rb') as handle:
                     handle.seek(start)
                     response = http.put(part_url, data=handle.read(end - start))
@@ -497,7 +543,6 @@ def upload_multipart(file_path, file_size, api_key, details, name, state):
                     raise
                 time.sleep(5 * (attempt + 1))
 
-    completed = False
     try:
         loaded = 0
         with ThreadPoolExecutor(max_workers=min(4, len(parts))) as executor:
@@ -507,39 +552,22 @@ def upload_multipart(file_path, file_size, api_key, details, name, state):
                 part = futures[future]
                 loaded += part[2] - part[1]
                 print_progress(name, loaded, file_size, state)
-        body = {}
-        for attempt in range(4):
-            if attempt:
-                time.sleep(2 * attempt)
-            try:
-                body = presigned_get({
-                    'action': 'complete',
-                    'key': api_key,
-                    'Key': storage_id,
-                    'uploadId': upload_id,
-                    'expectedParts': str(len(parts)),
-                })
-            except requests.HTTPError as error:
-                if error.response is not None and error.response.status_code == 409:
-                    continue
-                raise
-            if body.get('Key'):
-                completed = True
-                break
-        if not completed:
-            raise requests.RequestException(body.get('error') or 'Multipart complete failed')
     except Exception:
-        if not completed:
-            try:
-                http.get(PRESIGNED_URL, params={
-                    'action': 'abort',
-                    'key': api_key,
-                    'Key': storage_id,
-                    'uploadId': upload_id,
-                })
-            except requests.RequestException:
-                pass
+        # A part could not be uploaded, so the upload cannot finish. Abort it to free the stored parts.
+        try:
+            http.get(PRESIGNED_URL, params={
+                'action': 'abort',
+                'key': api_key,
+                'Key': storage_id,
+                'uploadId': upload_id,
+            }, timeout=(10, 60))
+        except requests.RequestException as abort_error:
+            print("[WARNING] Could not abort multipart upload %s: %s" % (upload_id, abort_error))
         raise
+
+    # Every part is stored from here on. Never abort past this point: if completing fails, the parts
+    # stay so the upload can be finished later instead of being uploaded again.
+    complete_multipart(api_key, storage_id, upload_id, len(parts))
     return storage_id
 
 
